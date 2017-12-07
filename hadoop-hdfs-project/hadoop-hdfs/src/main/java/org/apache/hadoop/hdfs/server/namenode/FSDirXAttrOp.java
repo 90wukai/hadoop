@@ -21,14 +21,15 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.Lists;
 import org.apache.hadoop.HadoopIllegalArgumentException;
+import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.XAttr;
 import org.apache.hadoop.fs.XAttrSetFlag;
 import org.apache.hadoop.fs.permission.FsAction;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSUtil;
 import org.apache.hadoop.hdfs.XAttrHelper;
-import org.apache.hadoop.hdfs.protocol.HdfsFileStatus;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos;
+import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.ReencryptionInfoProto;
 import org.apache.hadoop.hdfs.protocolPB.PBHelperClient;
 import org.apache.hadoop.hdfs.server.namenode.FSDirectory.DirOp;
 import org.apache.hadoop.security.AccessControlException;
@@ -59,7 +60,7 @@ class FSDirXAttrOp {
    *          - xAttrs flags
    * @throws IOException
    */
-  static HdfsFileStatus setXAttr(
+  static FileStatus setXAttr(
       FSDirectory fsd, String src, XAttr xAttr, EnumSet<XAttrSetFlag> flag,
       boolean logRetryCache)
       throws IOException {
@@ -153,7 +154,7 @@ class FSDirXAttrOp {
    *          - xAttr to remove
    * @throws IOException
    */
-  static HdfsFileStatus removeXAttr(
+  static FileStatus removeXAttr(
       FSDirectory fsd, String src, XAttr xAttr, boolean logRetryCache)
       throws IOException {
     FSDirXAttrOp.checkXAttrsConfigFlag(fsd);
@@ -170,7 +171,7 @@ class FSDirXAttrOp {
       src = iip.getPath();
       checkXAttrChangeAccess(fsd, iip, xAttr, pc);
 
-      List<XAttr> removedXAttrs = unprotectedRemoveXAttrs(fsd, src, xAttrs);
+      List<XAttr> removedXAttrs = unprotectedRemoveXAttrs(fsd, iip, xAttrs);
       if (removedXAttrs != null && !removedXAttrs.isEmpty()) {
         fsd.getEditLog().logRemoveXAttrs(src, removedXAttrs, logRetryCache);
       } else {
@@ -183,11 +184,14 @@ class FSDirXAttrOp {
     return fsd.getAuditFileInfo(iip);
   }
 
+  /**
+   * Remove xattrs from the inode, and return the <em>removed</em> xattrs.
+   * @return the <em>removed</em> xattrs.
+   */
   static List<XAttr> unprotectedRemoveXAttrs(
-      FSDirectory fsd, final String src, final List<XAttr> toRemove)
+      FSDirectory fsd, final INodesInPath iip, final List<XAttr> toRemove)
       throws IOException {
     assert fsd.hasWriteLock();
-    INodesInPath iip = fsd.getINodesInPath(src, DirOp.WRITE);
     INode inode = FSDirectory.resolveLastINode(iip);
     int snapshotId = iip.getLatestSnapshotId();
     List<XAttr> existingXAttrs = XAttrStorage.readINodeXAttrs(inode);
@@ -276,6 +280,12 @@ class FSDirXAttrOp {
             PBHelperClient.convert(ezProto.getSuite()),
             PBHelperClient.convert(ezProto.getCryptoProtocolVersion()),
             ezProto.getKeyName());
+
+        if (ezProto.hasReencryptionProto()) {
+          ReencryptionInfoProto reProto = ezProto.getReencryptionProto();
+          fsd.ezManager.getReencryptionStatus()
+              .updateZoneStatus(inode.getId(), iip.getPath(), reProto);
+        }
       }
 
       if (!isFile && SECURITY_XATTR_UNREADABLE_BY_SUPERUSER.equals(xaName)) {

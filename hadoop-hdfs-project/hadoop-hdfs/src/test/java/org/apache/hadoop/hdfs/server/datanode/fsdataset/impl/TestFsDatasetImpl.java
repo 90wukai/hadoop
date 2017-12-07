@@ -582,7 +582,7 @@ public class TestFsDatasetImpl {
           // Lets wait for the other thread finish getting block report
           blockReportReceivedLatch.await();
 
-          dataset.finalizeBlock(eb);
+          dataset.finalizeBlock(eb, false);
           LOG.info("FinalizeBlock finished");
         } catch (Exception e) {
           LOG.warn("Exception caught. This should not affect the test", e);
@@ -687,7 +687,7 @@ public class TestFsDatasetImpl {
           @Override public Boolean get() {
               return volume.getReferenceCount() == 0;
             }
-          }, 100, 10);
+          }, 100, 1000);
       assertThat(dataNode.getFSDataset().getNumFailedVolumes(), is(1));
 
       try {

@@ -19,7 +19,7 @@ package org.apache.hadoop.hdfs.protocolPB;
 
 
 import com.google.protobuf.UninitializedMessageException;
-import org.apache.hadoop.hdfs.protocol.AddingECPolicyResponse;
+import org.apache.hadoop.hdfs.protocol.AddErasureCodingPolicyResponse;
 import org.apache.hadoop.hdfs.protocol.SystemErasureCodingPolicies;
 import org.apache.hadoop.hdfs.server.protocol.SlowDiskReports;
 
@@ -913,14 +913,15 @@ public class TestPBHelper {
     // Check conversion of the built-in policies.
     for (ErasureCodingPolicy policy :
         SystemErasureCodingPolicies.getPolicies()) {
-      AddingECPolicyResponse response = new AddingECPolicyResponse(policy);
-      HdfsProtos.AddingECPolicyResponseProto proto = PBHelperClient
-          .convertAddingECPolicyResponse(response);
+      AddErasureCodingPolicyResponse response =
+          new AddErasureCodingPolicyResponse(policy);
+      HdfsProtos.AddErasureCodingPolicyResponseProto proto = PBHelperClient
+          .convertAddErasureCodingPolicyResponse(response);
       // Optional fields should not be set.
       assertFalse("Unnecessary field is set.", proto.hasErrorMsg());
       // Convert proto back to an object and check for equality.
-      AddingECPolicyResponse convertedResponse = PBHelperClient
-          .convertAddingECPolicyResponse(proto);
+      AddErasureCodingPolicyResponse convertedResponse = PBHelperClient
+          .convertAddErasureCodingPolicyResponse(proto);
       assertEquals("Converted policy not equal", response.getPolicy(),
           convertedResponse.getPolicy());
       assertEquals("Converted policy not equal", response.isSucceed(),
@@ -929,13 +930,13 @@ public class TestPBHelper {
 
     ErasureCodingPolicy policy = SystemErasureCodingPolicies
         .getPolicies().get(0);
-    AddingECPolicyResponse response =
-        new AddingECPolicyResponse(policy, "failed");
-    HdfsProtos.AddingECPolicyResponseProto proto = PBHelperClient
-        .convertAddingECPolicyResponse(response);
+    AddErasureCodingPolicyResponse response =
+        new AddErasureCodingPolicyResponse(policy, "failed");
+    HdfsProtos.AddErasureCodingPolicyResponseProto proto = PBHelperClient
+        .convertAddErasureCodingPolicyResponse(response);
     // Convert proto back to an object and check for equality.
-    AddingECPolicyResponse convertedResponse = PBHelperClient
-        .convertAddingECPolicyResponse(proto);
+    AddErasureCodingPolicyResponse convertedResponse = PBHelperClient
+        .convertAddErasureCodingPolicyResponse(proto);
     assertEquals("Converted policy not equal", response.getPolicy(),
         convertedResponse.getPolicy());
     assertEquals("Converted policy not equal", response.getErrorMsg(),
@@ -961,7 +962,7 @@ public class TestPBHelper {
     // Check conversion of a non-built-in policy.
     ECSchema newSchema = new ECSchema("testcodec", 3, 2);
     ErasureCodingPolicy newPolicy =
-        new ErasureCodingPolicy(newSchema, 128 * 1024, (byte) 254);
+        new ErasureCodingPolicy(newSchema, 128 * 1024);
     HdfsProtos.ErasureCodingPolicyProto proto = PBHelperClient
         .convertErasureCodingPolicy(newPolicy);
     // Optional fields should be set.

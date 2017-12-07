@@ -101,6 +101,9 @@ public final class DistCpOptions {
   // content at their s1, if src is not the same as tgt.
   private final boolean useRdiff;
 
+  /** Whether to log additional info (path, size) in the SKIP/COPY log. */
+  private final boolean verboseLog;
+
   // For both -diff and -rdiff, given the example command line switches, two
   // steps are taken:
   //   1. Sync Step. This step does renaming/deletion ops in the snapshot diff,
@@ -142,6 +145,8 @@ public final class DistCpOptions {
   // Size of chunk in number of blocks when splitting large file into chunks
   // to copy in parallel. Default is 0 and file are not splitted.
   private final int blocksPerChunk;
+
+  private final int copyBufferSize;
 
   /**
    * File attributes for preserve.
@@ -200,6 +205,9 @@ public final class DistCpOptions {
     this.preserveStatus = builder.preserveStatus;
 
     this.blocksPerChunk = builder.blocksPerChunk;
+
+    this.copyBufferSize = builder.copyBufferSize;
+    this.verboseLog = builder.verboseLog;
   }
 
   public Path getSourceFileListing() {
@@ -302,7 +310,7 @@ public final class DistCpOptions {
   }
 
   /**
-   * Checks if the input attribute should be preserved or not
+   * Checks if the input attribute should be preserved or not.
    *
    * @param attribute - Attribute to check
    * @return True if attribute should be preserved, false otherwise
@@ -313,6 +321,14 @@ public final class DistCpOptions {
 
   public int getBlocksPerChunk() {
     return blocksPerChunk;
+  }
+
+  public int getCopyBufferSize() {
+    return copyBufferSize;
+  }
+
+  public boolean shouldVerboseLog() {
+    return verboseLog;
   }
 
   /**
@@ -351,6 +367,10 @@ public final class DistCpOptions {
     }
     DistCpOptionSwitch.addToConf(conf, DistCpOptionSwitch.BLOCKS_PER_CHUNK,
         String.valueOf(blocksPerChunk));
+    DistCpOptionSwitch.addToConf(conf, DistCpOptionSwitch.COPY_BUFFER_SIZE,
+        String.valueOf(copyBufferSize));
+    DistCpOptionSwitch.addToConf(conf, DistCpOptionSwitch.VERBOSE_LOG,
+        String.valueOf(verboseLog));
   }
 
   /**
@@ -385,6 +405,8 @@ public final class DistCpOptions {
         ", targetPath=" + targetPath +
         ", filtersFile='" + filtersFile + '\'' +
         ", blocksPerChunk=" + blocksPerChunk +
+        ", copyBufferSize=" + copyBufferSize +
+        ", verboseLog=" + verboseLog +
         '}';
   }
 
@@ -409,6 +431,7 @@ public final class DistCpOptions {
     private boolean append = false;
     private boolean skipCRC = false;
     private boolean blocking = true;
+    private boolean verboseLog = false;
 
     private boolean useDiff = false;
     private boolean useRdiff = false;
@@ -428,6 +451,9 @@ public final class DistCpOptions {
         EnumSet.noneOf(FileAttribute.class);
 
     private int blocksPerChunk = 0;
+
+    private int copyBufferSize =
+            DistCpConstants.COPY_BUFFER_SIZE_DEFAULT;
 
     public Builder(List<Path> sourcePaths, Path targetPath) {
       Preconditions.checkArgument(sourcePaths != null && !sourcePaths.isEmpty(),
@@ -537,6 +563,11 @@ public final class DistCpOptions {
       if (useDiff && useRdiff) {
         throw new IllegalArgumentException(
             "-diff and -rdiff are mutually exclusive");
+      }
+
+      if (verboseLog && logPath == null) {
+        throw new IllegalArgumentException(
+            "-v is valid only with -log option");
       }
     }
 
@@ -662,6 +693,18 @@ public final class DistCpOptions {
 
     public Builder withBlocksPerChunk(int newBlocksPerChunk) {
       this.blocksPerChunk = newBlocksPerChunk;
+      return this;
+    }
+
+    public Builder withCopyBufferSize(int newCopyBufferSize) {
+      this.copyBufferSize =
+          newCopyBufferSize > 0 ? newCopyBufferSize
+              : DistCpConstants.COPY_BUFFER_SIZE_DEFAULT;
+      return this;
+    }
+
+    public Builder withVerboseLog(boolean newVerboseLog) {
+      this.verboseLog = newVerboseLog;
       return this;
     }
   }

@@ -255,7 +255,7 @@ public class LeveldbRMStateStore extends RMStateStore {
 
   @Override
   public synchronized long getAndIncrementEpoch() throws Exception {
-    long currentEpoch = 0;
+    long currentEpoch = baseEpoch;
     byte[] dbKeyBytes = bytes(EPOCH_NODE);
     try {
       byte[] data = db.get(dbKeyBytes);
@@ -410,11 +410,10 @@ public class LeveldbRMStateStore extends RMStateStore {
 
   private RMDelegationTokenIdentifierData loadDelegationToken(byte[] data)
       throws IOException {
-    RMDelegationTokenIdentifierData tokenData =
-        new RMDelegationTokenIdentifierData();
+    RMDelegationTokenIdentifierData tokenData = null;
     DataInputStream in = new DataInputStream(new ByteArrayInputStream(data));
     try {
-      tokenData.readFields(in);
+      tokenData = RMStateStoreUtils.readRMDelegationTokenIdentifierData(in);
     } finally {
       IOUtils.cleanup(LOG, in);
     }

@@ -889,19 +889,25 @@ public class TestEncryptionZones {
   @SuppressWarnings("unchecked")
   private static void mockCreate(ClientProtocol mcp,
       CipherSuite suite, CryptoProtocolVersion version) throws Exception {
-    Mockito.doReturn(
-        new HdfsFileStatus(0, false, 1, 1024, 0, 0, new FsPermission(
-            (short) 777), "owner", "group", new byte[0], new byte[0],
-            1010, 0, new FileEncryptionInfo(suite,
-            version, new byte[suite.getAlgorithmBlockSize()],
-            new byte[suite.getAlgorithmBlockSize()],
-            "fakeKey", "fakeVersion"),
-            (byte) 0, null))
+    Mockito.doReturn(new HdfsFileStatus.Builder()
+          .replication(1)
+          .blocksize(1024)
+          .perm(new FsPermission((short) 777))
+          .owner("owner")
+          .group("group")
+          .symlink(new byte[0])
+          .path(new byte[0])
+          .fileId(1010)
+          .feInfo(new FileEncryptionInfo(suite, version,
+              new byte[suite.getAlgorithmBlockSize()],
+              new byte[suite.getAlgorithmBlockSize()],
+              "fakeKey", "fakeVersion"))
+          .build())
         .when(mcp)
         .create(anyString(), (FsPermission) anyObject(), anyString(),
-            (EnumSetWritable<CreateFlag>) anyObject(), anyBoolean(),
-            anyShort(), anyLong(), (CryptoProtocolVersion[]) anyObject(),
-            anyObject());
+          (EnumSetWritable<CreateFlag>) anyObject(), anyBoolean(),
+          anyShort(), anyLong(), (CryptoProtocolVersion[]) anyObject(),
+          anyObject());
   }
 
   // This test only uses mocks. Called from the end of an existing test to
@@ -1247,6 +1253,7 @@ public class TestEncryptionZones {
     Mockito.when(keyProvider.getConf()).thenReturn(conf);
     byte[] testIdentifier = "Test identifier for delegation token".getBytes();
 
+    @SuppressWarnings("rawtypes")
     Token<?> testToken = new Token(testIdentifier, new byte[0],
         new Text(), new Text());
     Mockito.when(((DelegationTokenExtension)keyProvider).
@@ -1698,7 +1705,8 @@ public class TestEncryptionZones {
     Credentials credentials = new Credentials();
     // Key provider uri should be in the secret map of credentials object with
     // namenode uri as key
-    Text lookUpKey = client.getKeyProviderMapKey();
+    Text lookUpKey = HdfsKMSUtil.getKeyProviderMapKey(
+        cluster.getFileSystem().getUri());
     credentials.addSecretKey(lookUpKey,
         DFSUtilClient.string2Bytes(dummyKeyProvider));
     client.ugi.addCredentials(credentials);
@@ -1849,7 +1857,8 @@ public class TestEncryptionZones {
         CommonConfigurationKeysPublic.HADOOP_SECURITY_KEY_PROVIDER_PATH);
     DFSClient client = cluster.getFileSystem().getClient();
     Credentials credentials = new Credentials();
-    Text lookUpKey = client.getKeyProviderMapKey();
+    Text lookUpKey = HdfsKMSUtil.
+        getKeyProviderMapKey(cluster.getFileSystem().getUri());
     credentials.addSecretKey(lookUpKey,
         DFSUtilClient.string2Bytes(getKeyProviderURI()));
     client.ugi.addCredentials(credentials);
@@ -1865,5 +1874,86 @@ public class TestEncryptionZones {
     DFSTestUtil.createFile(fs, encFile1, len, (short) 1, 0xFEED);
     // Read them back in and compare byte-by-byte
     verifyFilesEqual(fs, baseFile, encFile1, len);
+  }
+
+  /**
+   * Test listing encryption zones after zones had been deleted,
+   * but still exist under snapshots. This test first moves EZs
+   * to trash folder, so that an inodereference is created for the EZ,
+   * then it removes the EZ from trash folder to emulate condition where
+   * the EZ inode will not be complete.
+   */
+  @Test
+  public void testListEncryptionZonesWithSnapshots() throws Exception {
+    final Path snapshottable = new Path("/zones");
+    final Path zoneDirectChild = new Path(snapshottable, "zone1");
+    final Path snapshottableChild = new Path(snapshottable, "child");
+    final Path zoneSubChild = new Path(snapshottableChild, "zone2");
+    fsWrapper.mkdir(zoneDirectChild, FsPermission.getDirDefault(),
+        true);
+    fsWrapper.mkdir(zoneSubChild, FsPermission.getDirDefault(),
+        true);
+    dfsAdmin.allowSnapshot(snapshottable);
+    dfsAdmin.createEncryptionZone(zoneDirectChild, TEST_KEY, NO_TRASH);
+    dfsAdmin.createEncryptionZone(zoneSubChild, TEST_KEY, NO_TRASH);
+    final Path snap1 = fs.createSnapshot(snapshottable, "snap1");
+    Configuration clientConf = new Configuration(conf);
+    clientConf.setLong(FS_TRASH_INTERVAL_KEY, 1);
+    FsShell shell = new FsShell(clientConf);
+    //will "trash" the zone under subfolder of snapshottable directory
+    verifyShellDeleteWithTrash(shell, snapshottableChild);
+    //permanently remove zone under subfolder of snapshottable directory
+    fsWrapper.delete(shell.getCurrentTrashDir(snapshottableChild),
+        true);
+    final RemoteIterator<EncryptionZone> it = dfsAdmin.listEncryptionZones();
+    boolean match = false;
+    while (it.hasNext()) {
+      EncryptionZone ez = it.next();
+      assertNotEquals("EncryptionZone " + zoneSubChild.toString() +
+          " should not be listed.",
+          ez.getPath(), zoneSubChild.toString());
+    }
+    //will "trash" the zone direct child of snapshottable directory
+    verifyShellDeleteWithTrash(shell, zoneDirectChild);
+    //permanently remove zone direct child of snapshottable directory
+    fsWrapper.delete(shell.getCurrentTrashDir(zoneDirectChild), true);
+    assertFalse("listEncryptionZones should not return anything, " +
+            "since both EZs were deleted.",
+        dfsAdmin.listEncryptionZones().hasNext());
+  }
+
+  /**
+  * This test returns mocked kms token when
+  * {@link WebHdfsFileSystem#addDelegationTokens(String, Credentials)} method
+  * is called.
+  * @throws Exception
+  */
+  @Test
+  public void addMockKmsToken() throws Exception {
+    UserGroupInformation.createRemoteUser("JobTracker");
+    WebHdfsFileSystem webfs = WebHdfsTestUtil.getWebHdfsFileSystem(conf,
+        WebHdfsConstants.WEBHDFS_SCHEME);
+    KeyProvider keyProvider = Mockito.mock(KeyProvider.class, withSettings()
+        .extraInterfaces(DelegationTokenExtension.class,
+         CryptoExtension.class));
+    Mockito.when(keyProvider.getConf()).thenReturn(conf);
+    byte[] testIdentifier = "Test identifier for delegation token".getBytes();
+
+    Token<?> testToken = new Token(testIdentifier, new byte[0],
+        new Text("kms-dt"), new Text());
+    Mockito.when(((DelegationTokenExtension) keyProvider)
+        .addDelegationTokens(anyString(), (Credentials) any()))
+        .thenReturn(new Token<?>[] {testToken});
+
+    WebHdfsFileSystem webfsSpy = Mockito.spy(webfs);
+    Mockito.doReturn(keyProvider).when(webfsSpy).getKeyProvider();
+
+    Credentials creds = new Credentials();
+    final Token<?>[] tokens =
+        webfsSpy.addDelegationTokens("JobTracker", creds);
+
+    Assert.assertEquals(2, tokens.length);
+    Assert.assertEquals(tokens[1], testToken);
+    Assert.assertEquals(1, creds.numberOfTokens());
   }
 }

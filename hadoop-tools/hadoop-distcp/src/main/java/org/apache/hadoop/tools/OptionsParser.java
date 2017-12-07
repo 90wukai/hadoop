@@ -111,7 +111,9 @@ public class OptionsParser {
         .withCRC(
             command.hasOption(DistCpOptionSwitch.SKIP_CRC.getSwitch()))
         .withBlocking(
-            !command.hasOption(DistCpOptionSwitch.BLOCKING.getSwitch()));
+            !command.hasOption(DistCpOptionSwitch.BLOCKING.getSwitch()))
+        .withVerboseLog(
+            command.hasOption(DistCpOptionSwitch.VERBOSE_LOG.getSwitch()));
 
     if (command.hasOption(DistCpOptionSwitch.DIFF.getSwitch())) {
       String[] snapshots = getVals(command,
@@ -187,6 +189,9 @@ public class OptionsParser {
     if (command.hasOption(DistCpOptionSwitch.PRESERVE_STATUS.getSwitch())) {
       builder.preserve(
           getVal(command, DistCpOptionSwitch.PRESERVE_STATUS.getSwitch()));
+    } else {
+      // No "preserve" settings specified. Preserve block-size.
+      builder.preserve(DistCpOptions.FileAttribute.BLOCKSIZE);
     }
 
     if (command.hasOption(DistCpOptionSwitch.FILE_LIMIT.getSwitch())) {
@@ -210,6 +215,18 @@ public class OptionsParser {
       } catch (NumberFormatException e) {
         throw new IllegalArgumentException("blocksPerChunk is invalid: "
             + chunkSizeStr, e);
+      }
+    }
+
+    if (command.hasOption(DistCpOptionSwitch.COPY_BUFFER_SIZE.getSwitch())) {
+      final String copyBufferSizeStr = getVal(command,
+          DistCpOptionSwitch.COPY_BUFFER_SIZE.getSwitch().trim());
+      try {
+        int copyBufferSize = Integer.parseInt(copyBufferSizeStr);
+        builder.withCopyBufferSize(copyBufferSize);
+      } catch (NumberFormatException e) {
+        throw new IllegalArgumentException("copyBufferSize is invalid: "
+            + copyBufferSizeStr, e);
       }
     }
 

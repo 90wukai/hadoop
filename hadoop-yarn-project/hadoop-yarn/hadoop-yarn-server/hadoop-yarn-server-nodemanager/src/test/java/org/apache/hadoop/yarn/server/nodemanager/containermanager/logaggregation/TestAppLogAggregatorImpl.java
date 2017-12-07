@@ -35,24 +35,23 @@ import org.apache.hadoop.yarn.event.Event;
 import org.apache.hadoop.yarn.event.EventHandler;
 import org.apache.hadoop.yarn.logaggregation.AggregatedLogFormat.LogKey;
 import org.apache.hadoop.yarn.logaggregation.AggregatedLogFormat.LogValue;
-import org.apache.hadoop.yarn.logaggregation.AggregatedLogFormat.LogWriter;
+import org.apache.hadoop.yarn.logaggregation.filecontroller.tfile.LogAggregationTFileController;
 import org.apache.hadoop.yarn.server.api.ContainerLogContext;
 import org.apache.hadoop.yarn.server.api.ContainerType;
 import org.apache.hadoop.yarn.server.nodemanager.Context;
 import org.apache.hadoop.yarn.server.nodemanager.DeletionService;
 import org.apache.hadoop.yarn.server.nodemanager.LocalDirsHandlerService;
 import org.apache.hadoop.yarn.server.nodemanager.NodeManager;
+import org.apache.hadoop.yarn.server.nodemanager.containermanager.deletion.task.FileDeletionTask;
 import org.apache.hadoop.yarn.server.nodemanager.recovery.NMNullStateStoreService;
 import org.apache.hadoop.yarn.server.nodemanager.security.NMContainerTokenSecretManager;
 import org.apache.hadoop.yarn.server.nodemanager.security.NMTokenSecretManagerInNM;
 import org.apache.hadoop.yarn.server.security.ApplicationACLsManager;
-import org.apache.hadoop.yarn.util.ConverterUtils;
 
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.ArgumentCaptor;
-import org.mockito.Matchers;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 
@@ -242,8 +241,8 @@ public class TestAppLogAggregatorImpl {
     // verify uploaded files
     ArgumentCaptor<LogValue> logValCaptor =
         ArgumentCaptor.forClass(LogValue.class);
-    verify(appLogAggregator.logWriter).append(any(LogKey.class),
-        logValCaptor.capture());
+    verify(appLogAggregator.getLogAggregationFileController()).write(
+        any(LogKey.class), logValCaptor.capture());
     Set<String> filesUploaded = new HashSet<>();
     LogValue logValue = logValCaptor.getValue();
     for(File file: logValue.getPendingLogFilesToUploadForThisContainer()) {
@@ -288,11 +287,13 @@ public class TestAppLogAggregatorImpl {
     final Context context = createContext(config);
     final FileContext fakeLfs = mock(FileContext.class);
     final Path remoteLogDirForApp = new Path(REMOTE_LOG_FILE.getAbsolutePath());
-
+    LogAggregationTFileController format = spy(
+        new LogAggregationTFileController());
+    format.initialize(config, "TFile");
     return new AppLogAggregatorInTest(dispatcher, deletionService,
         config, applicationId, ugi, nodeId, dirsService,
         remoteLogDirForApp, appAcls, logAggregationContext,
-        context, fakeLfs, recoveredLogInitedTimeMillis);
+        context, fakeLfs, recoveredLogInitedTimeMillis, format);
   }
 
   /**
@@ -311,16 +312,18 @@ public class TestAppLogAggregatorImpl {
         @Override
         public Void answer(InvocationOnMock invocationOnMock) throws Throwable {
           Set<String> paths = new HashSet<>();
-          Object[] args = invocationOnMock.getArguments();
-          for(int i = 2; i < args.length; i++) {
-            Path path = (Path) args[i];
-            paths.add(path.toUri().getRawPath());
+          Object[] tasks = invocationOnMock.getArguments();
+          for(int i = 0; i < tasks.length; i++) {
+            FileDeletionTask task = (FileDeletionTask) tasks[i];
+            for (Path path: task.getBaseDirs()) {
+              paths.add(path.toUri().getRawPath());
+            }
           }
           verifyFilesToDelete(expectedPathsForDeletion, paths);
           return null;
         }
       }).doNothing().when(deletionServiceWithExpectedFiles).delete(
-          any(String.class), any(Path.class), Matchers.<Path>anyVararg());
+          any(FileDeletionTask.class));
 
     return deletionServiceWithExpectedFiles;
   }
@@ -401,7 +404,6 @@ public class TestAppLogAggregatorImpl {
 
     final DeletionService deletionService;
     final ApplicationId applicationId;
-    final LogWriter logWriter;
     final ArgumentCaptor<LogValue> logValue;
 
     public AppLogAggregatorInTest(Dispatcher dispatcher,
@@ -410,19 +412,15 @@ public class TestAppLogAggregatorImpl {
         LocalDirsHandlerService dirsHandler, Path remoteNodeLogFileForApp,
         Map<ApplicationAccessType, String> appAcls,
         LogAggregationContext logAggregationContext, Context context,
-        FileContext lfs, long recoveredLogInitedTime) throws IOException {
+        FileContext lfs, long recoveredLogInitedTime,
+        LogAggregationTFileController format) throws IOException {
       super(dispatcher, deletionService, conf, appId, ugi, nodeId,
           dirsHandler, remoteNodeLogFileForApp, appAcls,
-          logAggregationContext, context, lfs, -1, recoveredLogInitedTime);
+          logAggregationContext, context, lfs, -1, recoveredLogInitedTime,
+          format);
       this.applicationId = appId;
       this.deletionService = deletionService;
-      this.logWriter = spy(new LogWriter());
       this.logValue = ArgumentCaptor.forClass(LogValue.class);
-    }
-
-    @Override
-    protected LogWriter createLogWriter() {
-      return this.logWriter;
     }
   }
 }

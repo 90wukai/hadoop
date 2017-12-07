@@ -51,16 +51,38 @@ public class TestErasureCodingPolicy {
     } catch (IllegalArgumentException e) {
       GenericTestUtils.assertExceptionContains("cellSize", e);
     }
+    try {
+      new ErasureCodingPolicy(null, 1024, (byte) -1);
+      fail("Instantiated invalid ErasureCodingPolicy");
+    } catch (NullPointerException e) {
+    }
+    try {
+      new ErasureCodingPolicy(SCHEMA_1, -1, (byte) -1);
+      fail("Instantiated invalid ErasureCodingPolicy");
+    } catch (IllegalArgumentException e) {
+      GenericTestUtils.assertExceptionContains("cellSize", e);
+    }
+    try {
+      new ErasureCodingPolicy(null, 1024);
+      fail("Instantiated invalid ErasureCodingPolicy");
+    } catch (NullPointerException e) {
+    }
+    try {
+      new ErasureCodingPolicy(SCHEMA_1, -1);
+      fail("Instantiated invalid ErasureCodingPolicy");
+    } catch (IllegalArgumentException e) {
+      GenericTestUtils.assertExceptionContains("cellSize", e);
+    }
   }
 
   @Test
   public void testEqualsAndHashCode() {
     ErasureCodingPolicy[] policies = new ErasureCodingPolicy[]{
-        new ErasureCodingPolicy("one", SCHEMA_1, 321, (byte) 1),
-        new ErasureCodingPolicy("two", SCHEMA_1, 321, (byte) 1),
-        new ErasureCodingPolicy("one", SCHEMA_2, 321, (byte) 1),
-        new ErasureCodingPolicy("one", SCHEMA_1, 123, (byte) 1),
-        new ErasureCodingPolicy("one", SCHEMA_1, 321, (byte) 3),
+        new ErasureCodingPolicy("one", SCHEMA_1, 1024, (byte) 1),
+        new ErasureCodingPolicy("two", SCHEMA_1, 1024, (byte) 1),
+        new ErasureCodingPolicy("one", SCHEMA_2, 1024, (byte) 1),
+        new ErasureCodingPolicy("one", SCHEMA_1, 2048, (byte) 1),
+        new ErasureCodingPolicy("one", SCHEMA_1, 1024, (byte) 3),
     };
 
     for (int i = 0; i < policies.length; i++) {

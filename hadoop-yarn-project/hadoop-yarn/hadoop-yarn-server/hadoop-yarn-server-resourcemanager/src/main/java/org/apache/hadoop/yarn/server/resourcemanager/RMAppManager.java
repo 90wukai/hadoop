@@ -43,12 +43,15 @@ import org.apache.hadoop.yarn.api.records.ResourceRequest;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.event.EventHandler;
 import org.apache.hadoop.yarn.exceptions.InvalidResourceRequestException;
-import org.apache.hadoop.yarn.exceptions.InvalidLabelResourceRequestException;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.ipc.RPCUtil;
 import org.apache.hadoop.yarn.security.AccessRequest;
 import org.apache.hadoop.yarn.security.YarnAuthorizationProvider;
 import org.apache.hadoop.yarn.server.resourcemanager.RMAuditLogger.AuditConstants;
+
+import org.apache.hadoop.yarn.server.resourcemanager.placement
+    .ApplicationPlacementContext;
+import org.apache.hadoop.yarn.server.resourcemanager.placement.PlacementManager;
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.RMStateStore;
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.RMStateStore.RMState;
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.Recoverable;
@@ -65,12 +68,13 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerUtils;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.YarnScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CSQueue;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler;
-import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.RMNodeLabelsManager;
 import org.apache.hadoop.yarn.server.security.ApplicationACLsManager;
 import org.apache.hadoop.yarn.server.utils.BuilderUtils;
+import org.apache.hadoop.yarn.util.Times;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.util.concurrent.SettableFuture;
+import org.apache.hadoop.yarn.util.StringHelper;
 
 /**
  * This class manages the list of applications for the resource manager. 
@@ -190,7 +194,12 @@ public class RMAppManager implements EventHandler<RMAppManagerEvent>,
           .add("preemptedAMContainers", metrics.getNumAMContainersPreempted())
           .add("preemptedNonAMContainers", metrics.getNumNonAMContainersPreempted())
           .add("preemptedResources", metrics.getResourcePreempted())
-          .add("applicationType", app.getApplicationType());
+          .add("applicationType", app.getApplicationType())
+          .add("resourceSeconds", StringHelper
+              .getResourceSecondsString(metrics.getResourceSecondsMap()))
+          .add("preemptedResourceSeconds", StringHelper
+              .getResourceSecondsString(
+                  metrics.getPreemptedResourceSecondsMap()));
       return summary;
     }
 
@@ -349,77 +358,39 @@ public class RMAppManager implements EventHandler<RMAppManagerEvent>,
         createAndPopulateNewRMApp(appContext, appState.getSubmitTime(),
             appState.getUser(), true, appState.getStartTime());
 
-    // If null amReq has been returned, check if it is the case that
-    // application has specified node label expression while node label
-    // has been disabled. Reject the recovery of this application if it
-    // is true and give clear message so that user can react properly.
-    if (!appContext.getUnmanagedAM() &&
-        (application.getAMResourceRequests() == null ||
-            application.getAMResourceRequests().isEmpty()) &&
-        !YarnConfiguration.areNodeLabelsEnabled(this.conf)) {
-      // check application submission context and see if am resource request
-      // or application itself contains any node label expression.
-      List<ResourceRequest> amReqsFromAppContext =
-          appContext.getAMContainerResourceRequests();
-      String labelExp =
-          (amReqsFromAppContext != null && !amReqsFromAppContext.isEmpty()) ?
-          amReqsFromAppContext.get(0).getNodeLabelExpression() : null;
-      if (labelExp == null) {
-        labelExp = appContext.getNodeLabelExpression();
-      }
-      if (labelExp != null &&
-          !labelExp.equals(RMNodeLabelsManager.NO_LABEL)) {
-        String message = "Failed to recover application " + appId
-            + ". NodeLabel is not enabled in cluster, but AM resource request "
-            + "contains a label expression.";
-        LOG.warn(message);
-        application.handle(
-            new RMAppEvent(appId, RMAppEventType.APP_REJECTED, message));
-        return;
-      }
-    }
-
     application.handle(new RMAppRecoverEvent(appId, rmState));
   }
 
   private RMAppImpl createAndPopulateNewRMApp(
       ApplicationSubmissionContext submissionContext, long submitTime,
       String user, boolean isRecovery, long startTime) throws YarnException {
+
+    ApplicationPlacementContext placementContext = null;
+
+    // We only do queue mapping when it's a new application
     if (!isRecovery) {
-      // Do queue mapping
-      if (rmContext.getQueuePlacementManager() != null) {
-        // We only do queue mapping when it's a new application
-        rmContext.getQueuePlacementManager().placeApplication(
+      try {
+        // Do queue mapping
+        placementContext = placeApplication(rmContext,
             submissionContext, user);
+        replaceQueueFromPlacementContext(placementContext,
+            submissionContext);
+      } catch (YarnException e) {
+        String msg = "Failed to place application " +
+            submissionContext.getApplicationId() + " to queue and specified "
+            + "queue is invalid : " + submissionContext.getQueue();
+        LOG.error(msg, e);
+        throw e;
       }
+
       // fail the submission if configured application timeout value is invalid
       RMServerUtils.validateApplicationTimeouts(
           submissionContext.getApplicationTimeouts());
     }
 
     ApplicationId applicationId = submissionContext.getApplicationId();
-    List<ResourceRequest> amReqs = null;
-    try {
-      amReqs = validateAndCreateResourceRequest(submissionContext, isRecovery);
-    } catch (InvalidLabelResourceRequestException e) {
-      // This can happen if the application had been submitted and run
-      // with Node Label enabled but recover with Node Label disabled.
-      // Thus there might be node label expression in the application's
-      // resource requests. If this is the case, create RmAppImpl with
-      // null amReq and reject the application later with clear error
-      // message. So that the application can still be tracked by RM
-      // after recovery and user can see what's going on and react accordingly.
-      if (isRecovery &&
-          !YarnConfiguration.areNodeLabelsEnabled(this.conf)) {
-        if (LOG.isDebugEnabled()) {
-          LOG.debug("AMResourceRequest is not created for " + applicationId
-              + ". NodeLabel is not enabled in cluster, but AM resource "
-              + "request contains a label expression.");
-        }
-      } else {
-        throw e;
-      }
-    }
+    List<ResourceRequest> amReqs = validateAndCreateResourceRequest(
+        submissionContext, isRecovery);
 
     // Verify and get the update application priority and set back to
     // submissionContext
@@ -463,7 +434,8 @@ public class RMAppManager implements EventHandler<RMAppManagerEvent>,
             submissionContext.getQueue(),
             submissionContext, this.scheduler, this.masterService,
             submitTime, submissionContext.getApplicationType(),
-            submissionContext.getApplicationTags(), amReqs, startTime);
+            submissionContext.getApplicationTags(), amReqs, placementContext,
+            startTime);
     // Concurrent app submissions with same applicationId will fail here
     // Concurrent app submissions with different applicationIds will not
     // influence each other
@@ -623,17 +595,40 @@ public class RMAppManager implements EventHandler<RMAppManagerEvent>,
   }
 
   // transaction method.
-  public void updateApplicationTimeout(RMApp app,
+  public Map<ApplicationTimeoutType, String> updateApplicationTimeout(RMApp app,
       Map<ApplicationTimeoutType, String> newTimeoutInISO8601Format)
       throws YarnException {
     ApplicationId applicationId = app.getApplicationId();
     synchronized (applicationId) {
       if (app.isAppInCompletedStates()) {
-        return;
+        return newTimeoutInISO8601Format;
       }
 
       Map<ApplicationTimeoutType, Long> newExpireTime = RMServerUtils
           .validateISO8601AndConvertToLocalTimeEpoch(newTimeoutInISO8601Format);
+
+      // validation is only for lifetime
+      Long updatedlifetimeInMillis =
+          newExpireTime.get(ApplicationTimeoutType.LIFETIME);
+      if (updatedlifetimeInMillis != null) {
+        long queueMaxLifetimeInSec =
+            scheduler.getMaximumApplicationLifetime(app.getQueue());
+
+        if (queueMaxLifetimeInSec > 0) {
+          if (updatedlifetimeInMillis > (app.getSubmitTime()
+              + queueMaxLifetimeInSec * 1000)) {
+            updatedlifetimeInMillis =
+                app.getSubmitTime() + queueMaxLifetimeInSec * 1000;
+            // cut off to maximum queue lifetime if update lifetime is exceeding
+            // queue lifetime.
+            newExpireTime.put(ApplicationTimeoutType.LIFETIME,
+                updatedlifetimeInMillis);
+
+            newTimeoutInISO8601Format.put(ApplicationTimeoutType.LIFETIME,
+                Times.formatISO8601(updatedlifetimeInMillis.longValue()));
+          }
+        }
+      }
 
       SettableFuture<Object> future = SettableFuture.create();
 
@@ -657,6 +652,8 @@ public class RMAppManager implements EventHandler<RMAppManagerEvent>,
 
       // update in-memory
       ((RMAppImpl) app).updateApplicationTimeout(newExpireTime);
+
+      return newTimeoutInISO8601Format;
     }
   }
 
@@ -781,6 +778,42 @@ public class RMAppManager implements EventHandler<RMAppManagerEvent>,
       LOG.error("Statestore update failed for move application '"
           + app.getApplicationId() + "' to queue '" + queue
           + "' with below exception:" + ex.getMessage());
+    }
+  }
+
+  @VisibleForTesting
+  ApplicationPlacementContext placeApplication(RMContext rmContext,
+      ApplicationSubmissionContext context, String user) throws YarnException {
+    ApplicationPlacementContext placementContext = null;
+    PlacementManager placementManager = rmContext.getQueuePlacementManager();
+
+    if (placementManager != null) {
+      placementContext = placementManager.placeApplication(context, user);
+    } else{
+      if ( context.getQueue() == null || context.getQueue().isEmpty()) {
+        final String msg = "Queue Placement Manager is not set. Cannot place "
+            + "application : " + context.getApplicationId() + " to queue and "
+            + "specified queue is invalid " + context.getQueue();
+        LOG.error(msg);
+        throw new YarnException(msg);
+      }
+    }
+
+    return placementContext;
+  }
+
+  void replaceQueueFromPlacementContext(
+      ApplicationPlacementContext placementContext,
+      ApplicationSubmissionContext context) {
+    // Set it to ApplicationSubmissionContext
+    //apply queue mapping only to new application submissions
+    if (placementContext != null && !StringUtils.equalsIgnoreCase(
+        context.getQueue(), placementContext.getQueue())) {
+      LOG.info("Placed application=" + context.getApplicationId() +
+          " to queue=" + placementContext.getQueue() + ", original queue="
+          + context
+          .getQueue());
+      context.setQueue(placementContext.getQueue());
     }
   }
 }

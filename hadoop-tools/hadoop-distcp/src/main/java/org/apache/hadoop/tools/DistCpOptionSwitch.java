@@ -119,6 +119,13 @@ public enum DistCpOptionSwitch {
       new Option("log", true, "Folder on DFS where distcp execution logs are saved")),
 
   /**
+   * Log additional info (path, size) in the SKIP/COPY log.
+   */
+  VERBOSE_LOG(DistCpConstants.CONF_LABEL_VERBOSE_LOG,
+      new Option("v", false,
+          "Log additional info (path, size) in the SKIP/COPY log")),
+
+  /**
    * Copy strategy is use. This could be dynamic or uniform size etc.
    * DistCp would use an appropriate input format based on this.
    */
@@ -178,6 +185,14 @@ public enum DistCpOptionSwitch {
           + "splitting. This switch is only applicable when the source file "
           + "system implements getBlockLocations method and the target file "
           + "system implements concat method")),
+
+  /**
+   * Configurable copy buffer size.
+   */
+  COPY_BUFFER_SIZE(DistCpConstants.CONF_LABEL_COPY_BUFFER_SIZE,
+      new Option("copybuffersize", true, "Size of the copy buffer to use. "
+          + "By default <copybuffersize> is "
+          + DistCpConstants.COPY_BUFFER_SIZE_DEFAULT + "B.")),
 
   /**
    * Specify bandwidth per map in MB, accepts bandwidth as a fraction

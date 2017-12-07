@@ -31,7 +31,6 @@ import static org.mockito.Matchers.any;
 import static org.mockito.Matchers.argThat;
 import static org.mockito.Matchers.eq;
 import static org.mockito.Matchers.isA;
-import static org.mockito.Matchers.isNull;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
@@ -67,7 +66,9 @@ import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.hadoop.fs.Options;
+import org.apache.hadoop.util.Shell;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.ContainerState;
+import org.apache.hadoop.yarn.server.nodemanager.containermanager.deletion.task.FileDeletionMatcher;
 import org.apache.hadoop.yarn.server.nodemanager.executor.LocalizerStartContext;
 import org.junit.Assert;
 import org.apache.commons.io.FileUtils;
@@ -1066,7 +1067,8 @@ public class TestResourceLocalizationService {
       verify(containerBus, times(3)).handle(argThat(matchesContainerLoc));
         
       // Verify deletion of localization token.
-      verify(delService).delete((String)isNull(), eq(localizationTokenPath));
+      verify(delService, times(1)).delete(argThat(new FileDeletionMatcher(
+          delService, null, localizationTokenPath, null)));
     } finally {
       spyService.stop();
       dispatcher.stop();
@@ -1188,6 +1190,149 @@ public class TestResourceLocalizationService {
 
       doLocalization(spyService, dispatcher, exec, delService);
 
+    } finally {
+      spyService.stop();
+      dispatcher.stop();
+      delService.stop();
+    }
+  }
+
+  private static class DummyShellExecutor extends DefaultContainerExecutor {
+    private AtomicInteger numLocalizers = new AtomicInteger(0);
+    @Override
+    public void startLocalizer(LocalizerStartContext ctx) throws IOException,
+        InterruptedException {
+      numLocalizers.incrementAndGet();
+      Shell.ShellCommandExecutor shexec = new Shell.ShellCommandExecutor(
+          new String[]{"bash", "-c", "sleep 300"});
+      try {
+        shexec.execute();
+        Assert.fail("Shell finished without being interrupted");
+      } catch (IOException e) {
+        System.out.println("Got expected exception executing shell " +
+            e.toString());
+      }
+      numLocalizers.decrementAndGet();
+    }
+    private void waitForLocalizers(int num) {
+      while (numLocalizers.intValue() != num) {
+        Thread.yield();
+      }
+    }
+    private void waitForShellCount(int num) {
+      while (Shell.getAllShells().size() != num) {
+        Thread.yield();
+      }
+    }
+  }
+
+  @Test(timeout = 60000)
+  @SuppressWarnings("unchecked")
+  public void testShellDestroyedOnContainerKill() throws Exception {
+    List<Path> localDirs = new ArrayList<Path>();
+    String[] sDirs = new String[1];
+    localDirs.add(lfs.makeQualified(new Path(basedir, 0 + "")));
+    sDirs[0] = localDirs.get(0).toString();
+
+    conf.setStrings(YarnConfiguration.NM_LOCAL_DIRS, sDirs);
+
+    DummyShellExecutor exec = new DummyShellExecutor();
+    LocalDirsHandlerService dirsHandler = new LocalDirsHandlerService();
+    dirsHandler.init(conf);
+
+    DeletionService delServiceReal = new DeletionService(exec);
+    DeletionService delService = spy(delServiceReal);
+    delService.init(new Configuration());
+    delService.start();
+
+    DrainDispatcher dispatcher = getDispatcher(conf);
+    ResourceLocalizationService rawService = new ResourceLocalizationService(
+        dispatcher, exec, delService, dirsHandler, nmContext, metrics);
+
+    ResourceLocalizationService spyService = spy(rawService);
+    doReturn(mockServer).when(spyService).createServer();
+    doReturn(lfs).when(spyService).getLocalFileContext(isA(Configuration
+        .class));
+    FsPermission defaultPermission =
+        FsPermission.getDirDefault().applyUMask(lfs.getUMask());
+    FsPermission nmPermission =
+        ResourceLocalizationService.NM_PRIVATE_PERM.applyUMask(lfs.getUMask());
+    final Path userDir =
+        new Path(sDirs[0].substring("file:".length()),
+            ContainerLocalizer.USERCACHE);
+    final Path fileDir =
+        new Path(sDirs[0].substring("file:".length()),
+            ContainerLocalizer.FILECACHE);
+    final Path sysDir =
+        new Path(sDirs[0].substring("file:".length()),
+            ResourceLocalizationService.NM_PRIVATE_DIR);
+    final FileStatus fs =
+        new FileStatus(0, true, 1, 0, System.currentTimeMillis(), 0,
+            defaultPermission, "", "", new Path(sDirs[0]));
+    final FileStatus nmFs =
+        new FileStatus(0, true, 1, 0, System.currentTimeMillis(), 0,
+            nmPermission, "", "", sysDir);
+
+    doAnswer(new Answer<FileStatus>() {
+      @Override
+      public FileStatus answer(InvocationOnMock invocation) throws Throwable {
+        Object[] args = invocation.getArguments();
+        if (args.length > 0) {
+          if (args[0].equals(userDir) || args[0].equals(fileDir)) {
+            return fs;
+          }
+        }
+        return nmFs;
+      }
+    }).when(spylfs).getFileStatus(isA(Path.class));
+
+    try {
+      spyService.init(conf);
+      spyService.start();
+
+      final Application app = mock(Application.class);
+      final ApplicationId appId =
+          BuilderUtils.newApplicationId(314159265358979L, 3);
+      String user = "user0";
+      when(app.getUser()).thenReturn(user);
+      when(app.getAppId()).thenReturn(appId);
+      List<LocalResource> resources = initializeLocalizer(appId);
+      LocalResource resource1 = resources.get(0);
+      final Container c1 = getMockContainer(appId, 42, "user0");
+
+      EventHandler<ApplicationEvent> applicationBus =
+          getApplicationBus(dispatcher);
+      EventHandler<ContainerEvent> containerBus = getContainerBus(dispatcher);
+      initApp(spyService, applicationBus, app, appId, dispatcher);
+
+      // Send localization request for container c1.
+      final LocalResourceRequest req1 = new LocalResourceRequest(resource1);
+      Map<LocalResourceVisibility, Collection<LocalResourceRequest>> rsrcs =
+          new HashMap<>();
+      List<LocalResourceRequest> privateResourceList =
+          new ArrayList<>();
+      privateResourceList.add(req1);
+      rsrcs.put(LocalResourceVisibility.PRIVATE, privateResourceList);
+      spyService.handle(new ContainerLocalizationRequestEvent(c1, rsrcs));
+
+      // Wait for localizer of container c1 to begin.
+      exec.waitForLocalizers(1);
+      exec.waitForShellCount(1);
+      LocalizerRunner localizerRunner =
+          spyService.getLocalizerRunner(c1.getContainerId().toString());
+
+      // Container c1 is killed which leads to cleanup
+      spyService.handle(new ContainerLocalizationCleanupEvent(c1, rsrcs));
+      dispatcher.await();
+
+      // Wait for localizer of container c1 to stop.
+      exec.waitForShellCount(0);
+      exec.waitForLocalizers(0);
+
+      // Check that the thread is no longer running
+      while (localizerRunner.isAlive()) {
+        Thread.sleep(10);
+      }
     } finally {
       spyService.stop();
       dispatcher.stop();
@@ -1340,8 +1485,8 @@ public class TestResourceLocalizationService {
       Thread.sleep(50);
     }
     // Verify if downloading resources were submitted for deletion.
-    verify(delService).delete(eq(user), (Path) eq(null),
-        argThat(new DownloadingPathsMatcher(paths)));
+    verify(delService, times(2)).delete(argThat(new FileDeletionMatcher(
+        delService, user, null, new ArrayList<>(paths))));
 
     LocalResourcesTracker tracker = spyService.getLocalResourcesTracker(
         LocalResourceVisibility.PRIVATE, "user0", appId);
@@ -2753,15 +2898,19 @@ public class TestResourceLocalizationService {
       for (int i = 0; i < containerLocalDirs.size(); ++i) {
         if (i == 2) {
           try {
-            verify(delService).delete(user, containerLocalDirs.get(i));
-            verify(delService).delete(null, nmLocalContainerDirs.get(i));
+            verify(delService, times(1)).delete(argThat(new FileDeletionMatcher(
+                delService, user, containerLocalDirs.get(i), null)));
+            verify(delService, times(1)).delete(argThat(new FileDeletionMatcher(
+                delService, null, nmLocalContainerDirs.get(i), null)));
             Assert.fail("deletion attempts for invalid dirs");
           } catch (Throwable e) {
             continue;
           }
         } else {
-          verify(delService).delete(user, containerLocalDirs.get(i));
-          verify(delService).delete(null, nmLocalContainerDirs.get(i));
+          verify(delService, times(1)).delete(argThat(new FileDeletionMatcher(
+              delService, user, containerLocalDirs.get(i), null)));
+          verify(delService, times(1)).delete(argThat(new FileDeletionMatcher(
+              delService, null, nmLocalContainerDirs.get(i), null)));
         }
       }
 
@@ -2802,15 +2951,19 @@ public class TestResourceLocalizationService {
       for (int i = 0; i < containerLocalDirs.size(); ++i) {
         if (i == 3) {
           try {
-            verify(delService).delete(user, containerLocalDirs.get(i));
-            verify(delService).delete(null, nmLocalContainerDirs.get(i));
+            verify(delService, times(1)).delete(argThat(new FileDeletionMatcher(
+                delService, user, containerLocalDirs.get(i), null)));
+            verify(delService, times(1)).delete(argThat(new FileDeletionMatcher(
+                delService, null, nmLocalContainerDirs.get(i), null)));
             Assert.fail("deletion attempts for invalid dirs");
           } catch (Throwable e) {
             continue;
           }
         } else {
-          verify(delService).delete(user, appLocalDirs.get(i));
-          verify(delService).delete(null, nmLocalAppDirs.get(i));
+          verify(delService, times(1)).delete(argThat(new FileDeletionMatcher(
+              delService, user, containerLocalDirs.get(i), null)));
+          verify(delService, times(1)).delete(argThat(new FileDeletionMatcher(
+              delService, null, nmLocalContainerDirs.get(i), null)));
         }
       }
 
@@ -2820,4 +2973,75 @@ public class TestResourceLocalizationService {
     }
   }
 
+  @Test
+  @SuppressWarnings("unchecked")
+  public void testDirHandler() throws Exception {
+    File f = new File(basedir.toString());
+    String[] sDirs = new String[4];
+    List<Path> localDirs = new ArrayList<Path>(sDirs.length);
+    for (int i = 0; i < 4; ++i) {
+      sDirs[i] = f.getAbsolutePath() + i;
+      localDirs.add(new Path(sDirs[i]));
+    }
+    conf.setStrings(YarnConfiguration.NM_LOCAL_DIRS, sDirs);
+    LocalizerTracker mockLocalizerTracker = mock(LocalizerTracker.class);
+    DrainDispatcher dispatcher = new DrainDispatcher();
+    dispatcher.init(conf);
+    dispatcher.start();
+    EventHandler<ApplicationEvent> applicationBus = mock(EventHandler.class);
+    dispatcher.register(ApplicationEventType.class, applicationBus);
+    EventHandler<LocalizerEvent> localizerBus = mock(EventHandler.class);
+    dispatcher.register(LocalizerEventType.class, localizerBus);
+
+    ContainerExecutor exec = mock(ContainerExecutor.class);
+    LocalDirsHandlerService mockDirsHandler =
+        mock(LocalDirsHandlerService.class);
+    doReturn(new ArrayList<String>(Arrays.asList(sDirs))).when(
+        mockDirsHandler).getLocalDirsForCleanup();
+    // setup mocks
+    DeletionService delService = mock(DeletionService.class);
+    ResourceLocalizationService rawService =
+        new ResourceLocalizationService(dispatcher, exec, delService,
+            mockDirsHandler, nmContext, metrics);
+    ResourceLocalizationService spyService = spy(rawService);
+    doReturn(mockServer).when(spyService).createServer();
+    doReturn(mockLocalizerTracker).when(spyService).createLocalizerTracker(
+        isA(Configuration.class));
+
+    final String user = "user0";
+    // init application
+    final Application app = mock(Application.class);
+    final ApplicationId appId =
+        BuilderUtils.newApplicationId(314159265358979L, 3);
+    when(app.getUser()).thenReturn(user);
+    when(app.getAppId()).thenReturn(appId);
+    when(app.toString()).thenReturn(appId.toString());
+    try {
+      spyService.init(conf);
+      spyService.start();
+
+      spyService.handle(new ApplicationLocalizationEvent(
+          LocalizationEventType.INIT_APPLICATION_RESOURCES, app));
+      dispatcher.await();
+
+      LocalResourcesTracker appTracker =
+          spyService.getLocalResourcesTracker(
+              LocalResourceVisibility.APPLICATION, user, appId);
+      LocalResourcesTracker privTracker =
+          spyService.getLocalResourcesTracker(LocalResourceVisibility.PRIVATE,
+              user, appId);
+      LocalResourcesTracker pubTracker =
+          spyService.getLocalResourcesTracker(LocalResourceVisibility.PUBLIC,
+              user, appId);
+      Assert.assertNotNull("dirHandler for appTracker is null!",
+          ((LocalResourcesTrackerImpl)appTracker).getDirsHandler());
+      Assert.assertNotNull("dirHandler for privTracker is null!",
+          ((LocalResourcesTrackerImpl)privTracker).getDirsHandler());
+      Assert.assertNotNull("dirHandler for pubTracker is null!",
+          ((LocalResourcesTrackerImpl)pubTracker).getDirsHandler());
+    } finally {
+      dispatcher.stop();
+      delService.stop();
+    }
+  }
 }

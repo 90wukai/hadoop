@@ -45,6 +45,7 @@ import org.apache.hadoop.util.Time;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import org.apache.hadoop.fs.StorageType;
+import org.apache.hadoop.util.Timer;
 
 /**
  * BlockTokenSecretManager can be instantiated in 2 modes, master mode
@@ -84,6 +85,11 @@ public class BlockTokenSecretManager extends
   private final SecureRandom nonceGenerator = new SecureRandom();
 
   /**
+   * Timer object for querying the current time. Separated out for
+   * unit testing.
+   */
+  private Timer timer;
+  /**
    * Constructor for workers.
    *
    * @param keyUpdateInterval how often a new key will be generated
@@ -106,6 +112,7 @@ public class BlockTokenSecretManager extends
    * @param blockPoolId block pool ID
    * @param encryptionAlgorithm encryption algorithm to use
    * @param numNNs number of namenodes possible
+   * @param useProto should we use new protobuf style tokens
    */
   public BlockTokenSecretManager(long keyUpdateInterval,
       long tokenLifetime, int nnIndex, int numNNs,  String blockPoolId,
@@ -130,6 +137,7 @@ public class BlockTokenSecretManager extends
     this.blockPoolId = blockPoolId;
     this.encryptionAlgorithm = encryptionAlgorithm;
     this.useProto = useProto;
+    this.timer = new Timer();
     generateKeys();
   }
 
@@ -160,10 +168,10 @@ public class BlockTokenSecretManager extends
      * more.
      */
     setSerialNo(serialNo + 1);
-    currentKey = new BlockKey(serialNo, Time.now() + 2
+    currentKey = new BlockKey(serialNo, timer.now() + 2
         * keyUpdateInterval + tokenLifetime, generateSecret());
     setSerialNo(serialNo + 1);
-    nextKey = new BlockKey(serialNo, Time.now() + 3
+    nextKey = new BlockKey(serialNo, timer.now() + 3
         * keyUpdateInterval + tokenLifetime, generateSecret());
     allKeys.put(currentKey.getKeyId(), currentKey);
     allKeys.put(nextKey.getKeyId(), nextKey);
@@ -180,7 +188,7 @@ public class BlockTokenSecretManager extends
   }
 
   private synchronized void removeExpiredKeys() {
-    long now = Time.now();
+    long now = timer.now();
     for (Iterator<Map.Entry<Integer, BlockKey>> it = allKeys.entrySet()
         .iterator(); it.hasNext();) {
       Map.Entry<Integer, BlockKey> e = it.next();
@@ -230,15 +238,15 @@ public class BlockTokenSecretManager extends
     removeExpiredKeys();
     // set final expiry date of retiring currentKey
     allKeys.put(currentKey.getKeyId(), new BlockKey(currentKey.getKeyId(),
-        Time.now() + keyUpdateInterval + tokenLifetime,
+        timer.now() + keyUpdateInterval + tokenLifetime,
         currentKey.getKey()));
     // update the estimated expiry date of new currentKey
-    currentKey = new BlockKey(nextKey.getKeyId(), Time.now()
+    currentKey = new BlockKey(nextKey.getKeyId(), timer.now()
         + 2 * keyUpdateInterval + tokenLifetime, nextKey.getKey());
     allKeys.put(currentKey.getKeyId(), currentKey);
     // generate a new nextKey
     setSerialNo(serialNo + 1);
-    nextKey = new BlockKey(serialNo, Time.now() + 3
+    nextKey = new BlockKey(serialNo, timer.now() + 3
         * keyUpdateInterval + tokenLifetime, generateSecret());
     allKeys.put(nextKey.getKeyId(), nextKey);
     return true;
@@ -410,7 +418,7 @@ public class BlockTokenSecretManager extends
     }
     if (key == null)
       throw new IllegalStateException("currentKey hasn't been initialized.");
-    identifier.setExpiryDate(Time.now() + tokenLifetime);
+    identifier.setExpiryDate(timer.now() + tokenLifetime);
     identifier.setKeyId(key.getKeyId());
     if (LOG.isDebugEnabled()) {
       LOG.debug("Generating block token for " + identifier.toString());
@@ -461,7 +469,7 @@ public class BlockTokenSecretManager extends
     }
     byte[] encryptionKey = createPassword(nonce, key.getKey());
     return new DataEncryptionKey(key.getKeyId(), blockPoolId, nonce,
-        encryptionKey, Time.now() + tokenLifetime,
+        encryptionKey, timer.now() + tokenLifetime,
         encryptionAlgorithm);
   }
 

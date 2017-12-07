@@ -21,8 +21,22 @@ var Funnel = require("broccoli-funnel");
 var EmberApp = require('ember-cli/lib/broccoli/ember-app');
 
 module.exports = function(defaults) {
+  var isProd = EmberApp.env() === 'production';
   var app = new EmberApp(defaults, {
-    hinting: true
+    storeConfigInMeta: false,
+    minifyCSS: {
+      enabled: isProd
+    },
+    minifyJS: {
+      // Will be minified by wro4j-maven-plugin for performance
+      enabled: false,
+    },
+    fingerprint: {
+      enabled: false
+    },
+    sourcemaps: {
+      enabled: !isProd
+    }
   });
 
   app.import("bower_components/datatables/media/css/jquery.dataTables.min.css");
@@ -35,6 +49,7 @@ module.exports = function(defaults) {
   app.import('bower_components/bootstrap/dist/css/bootstrap.css');
   app.import('bower_components/bootstrap/dist/css/bootstrap-theme.css');
   app.import('bower_components/bootstrap/dist/js/bootstrap.min.js');
+  app.import('bower_components/alasql/dist/alasql.js');
 
   // Use `app.import` to add additional libraries to the generated
   // output files.

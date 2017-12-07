@@ -1,5 +1,3 @@
-package org.apache.hadoop.tools;
-
 /**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
@@ -17,6 +15,8 @@ package org.apache.hadoop.tools;
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
+package org.apache.hadoop.tools;
 
 import org.apache.hadoop.fs.Path;
 
@@ -45,6 +45,7 @@ public class DistCpConstants {
   public static final String CONF_LABEL_ATOMIC_COPY = "distcp.atomic.copy";
   public static final String CONF_LABEL_WORK_PATH = "distcp.work.path";
   public static final String CONF_LABEL_LOG_PATH = "distcp.log.path";
+  public static final String CONF_LABEL_VERBOSE_LOG = "distcp.verbose.log";
   public static final String CONF_LABEL_IGNORE_FAILURES = "distcp.ignore.failures";
   public static final String CONF_LABEL_PRESERVE_STATUS = "distcp.preserve.status";
   public static final String CONF_LABEL_PRESERVE_RAWXATTRS =
@@ -109,6 +110,10 @@ public class DistCpConstants {
   /* DistCp CopyListing class override param */
   public static final String CONF_LABEL_COPY_LISTING_CLASS = "distcp.copy.listing.class";
 
+  /* DistCp Copy Buffer Size */
+  public static final String CONF_LABEL_COPY_BUFFER_SIZE =
+      "distcp.copy.buffer.size";
+
   /**
    * Constants for DistCp return code to shell / consumer of ToolRunner's run
    */
@@ -141,4 +146,6 @@ public class DistCpConstants {
   public static final String HDFS_RESERVED_RAW_DIRECTORY_NAME = "/.reserved/raw";
 
   static final String HDFS_DISTCP_DIFF_DIRECTORY_NAME = ".distcp.diff.tmp";
+
+  public static final int COPY_BUFFER_SIZE_DEFAULT = 8 * 1024;
 }

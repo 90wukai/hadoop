@@ -18,9 +18,21 @@
 
 import Ember from 'ember';
 import AppTableController from './app-table-columns';
-
+import TableDefinition from 'em-table/utils/table-definition';
 
 export default AppTableController.extend({
+  queryParams: ['searchText', 'sortColumnId', 'sortOrder', 'pageNum', 'rowCount'],
+  tableDefinition: TableDefinition.create({
+    sortColumnId: 'stTime',
+    sortOrder: 'desc',
+    rowCount: 25,
+    enableFaceting: true
+  }),
+  searchText: Ember.computed.alias('tableDefinition.searchText'),
+  sortColumnId: Ember.computed.alias('tableDefinition.sortColumnId'),
+  sortOrder: Ember.computed.alias('tableDefinition.sortOrder'),
+  pageNum: Ember.computed.alias('tableDefinition.pageNum'),
+  rowCount: Ember.computed.alias('tableDefinition.rowCount'),
 
   breadcrumbs: [{
     text: "Home",
